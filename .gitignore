@@ -1,0 +1,38 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Data and checkpoints
+data/
+checkpoints/
+results/
+*.pt
+*.pth
+*.npy
+
+# Lean build artifacts
+lean/.lake/
+lean/lake-packages/
+lean/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+.venv/
+venv/

@@ -1,0 +1,31 @@
+# Toroidal regularization with N=12 grid (144 torus positions) — DEFAULT
+# Matches Tonnetz geometry from TLB paper. λ₁ ≈ 0.268.
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 1.0e-3
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal
+  grid_size: 12
+  lambda_std: 25.0
+  lambda_torus: 1.0
+  penalty_mode: distance
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_N12
+  save_every: 50
