@@ -163,7 +163,7 @@ def extract_torus_embeddings(
 
 def compute_torus_topology(
     torus_embed: np.ndarray,
-    n_subsample: int = 3000,
+    n_subsample: int = 1000,
     persistence_threshold: float = 0.05,
     verbose: bool = True,
 ) -> TopologyMetrics:
