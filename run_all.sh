@@ -1,13 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Toroidal JEPA — Run all 5 training configs + evaluation
-# Usage: cd /workspace/jepa-torus && bash run_all.sh
-# RTX 4090: ~1h per config, ~5h total
+# Toroidal JEPA — Run all 7 training configs + evaluation
+# Usage: cd /path/to/jepa-torus && nohup bash run_all.sh > run_all.log 2>&1 &
+# RTX 4090: ~1h per config, ~7h total (overnight run)
 
 echo "============================================"
 echo "  jepa-torus: Full Training Pipeline"
 echo "  $(date)"
+echo "  PID: $$"
 echo "============================================"
 
 # Install deps (runpod-torch-v240 has PyTorch already)
@@ -22,12 +23,23 @@ CONFIGS=(
     "toroidal_N12"
     "toroidal_N8"
     "toroidal_N16"
+    "toroidal_v2_N12"
+    "toroidal_v2_N8"
 )
 
+# Create output dirs upfront
 for cfg in "${CONFIGS[@]}"; do
+    mkdir -p "checkpoints/${cfg}" "results/${cfg}"
+done
+
+TOTAL=${#CONFIGS[@]}
+CURRENT=0
+
+for cfg in "${CONFIGS[@]}"; do
+    CURRENT=$((CURRENT + 1))
     echo ""
     echo "============================================"
-    echo "  Training: ${cfg}"
+    echo "  [${CURRENT}/${TOTAL}] Training: ${cfg}"
     echo "  Started: $(date)"
     echo "============================================"
 
@@ -43,11 +55,12 @@ for cfg in "${CONFIGS[@]}"; do
         --output-dir "results/${cfg}" 2>&1 | tee "results/${cfg}/eval.log"
 
     echo "  Finished: ${cfg} at $(date)"
+    echo ""
 done
 
 echo ""
 echo "============================================"
-echo "  All runs complete: $(date)"
+echo "  All ${TOTAL} runs complete: $(date)"
 echo "============================================"
 echo ""
 
@@ -56,8 +69,8 @@ python -c "
 import json
 from pathlib import Path
 
-print(f\"{'Config':<25} {'Accuracy':>10} {'Eff.Rank':>10} {'Spec.Gap':>10} {'Torus':>8}\")
-print('='*68)
+print(f\"{'Config':<25} {'Accuracy':>10} {'Eff.Rank':>10} {'Spec.Gap':>10} {'Torus':>8} {'Space':>12}\")
+print('='*80)
 for d in sorted(Path('results').iterdir()):
     f = d / 'eval_results.json'
     if not f.exists(): continue
@@ -66,5 +79,9 @@ for d in sorted(Path('results').iterdir()):
     er = r.get('covariance',{}).get('effective_rank', 0)
     sg = r.get('topology',{}).get('spectral_gap', 0)
     ts = r.get('topology',{}).get('torus_score', 0)
-    print(f'{d.name:<25} {acc:>10.4f} {er:>10.2f} {sg:>10.4f} {ts:>8.4f}')
+    sp = r.get('topology',{}).get('analysis_space', 'encoder')
+    print(f'{d.name:<25} {acc:>10.4f} {er:>10.2f} {sg:>10.4f} {ts:>8.4f} {sp:>12}')
 "
+
+echo ""
+echo "Done. Results in results/*/eval_results.json"

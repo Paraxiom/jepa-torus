@@ -20,6 +20,7 @@ from torchvision import datasets, transforms
 from .train import EBJEPA
 from .analysis import (
     extract_embeddings,
+    extract_torus_embeddings,
     full_analysis,
     compute_covariance_metrics,
     umap_projection,
@@ -152,7 +153,7 @@ def evaluate(
     run_linear_probe: bool = True,
     run_analysis: bool = True,
     run_umap: bool = False,
-    grid_size: int = 12,
+    grid_size: int | None = None,
     output_dir: str | None = None,
 ) -> dict:
     """Full evaluation pipeline.
@@ -163,7 +164,7 @@ def evaluate(
         run_linear_probe: Run linear probing evaluation.
         run_analysis: Run topological analysis.
         run_umap: Run UMAP visualization.
-        grid_size: Torus grid size for analysis.
+        grid_size: Torus grid size for analysis (None = auto-detect from checkpoint config).
         output_dir: Where to save results.
 
     Returns:
@@ -176,15 +177,27 @@ def evaluate(
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = ckpt.get("config", {})
 
-    # Reconstruct model
+    # Auto-detect grid_size from training config
+    loss_cfg = config.get("loss", {})
+    if grid_size is None:
+        grid_size = loss_cfg.get("grid_size", 12)
+        print(f"Auto-detected grid_size={grid_size} from checkpoint config")
+
+    # Reconstruct model — detect torus_head from loss type
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
+    loss_type = loss_cfg.get("type", "toroidal")
+    use_torus_head = loss_type == "toroidal_v2"
+
     model = EBJEPA(
         embed_dim=embed_dim,
         hidden_dim=model_cfg.get("hidden_dim", 1024),
+        torus_head=use_torus_head,
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
+    if use_torus_head:
+        print("Torus projection head: DETECTED (will analyze 4D torus branch)")
 
     # Data
     train_loader, test_loader = get_dataloaders(data_dir)
@@ -195,7 +208,7 @@ def evaluate(
         "embed_dim": embed_dim,
     }
 
-    # Linear probe
+    # Linear probe (always on 512D encoder)
     if run_linear_probe:
         print("\n--- Linear Probing ---")
         probe_results = linear_probe(
@@ -206,15 +219,22 @@ def evaluate(
         print(f"Best test accuracy: {probe_results['best_test_acc']:.4f}")
 
     # Extract embeddings for analysis
+    torus_embed_np = None
     if run_analysis or run_umap:
         print("\n--- Extracting Embeddings ---")
         embeddings = extract_embeddings(model, test_loader, device, max_samples=10000)
         print(f"Extracted {embeddings.shape[0]} embeddings of dim {embeddings.shape[1]}")
 
+        # Extract torus branch if available
+        if use_torus_head:
+            _, torus_embed_np = extract_torus_embeddings(model, test_loader, device, max_samples=10000)
+            if torus_embed_np is not None:
+                print(f"Extracted {torus_embed_np.shape[0]} torus embeddings of dim {torus_embed_np.shape[1]}")
+
     # Topological analysis
     if run_analysis:
         print("\n--- Topological Analysis ---")
-        metrics = full_analysis(embeddings, grid_size=grid_size)
+        metrics = full_analysis(embeddings, grid_size=grid_size, torus_embed=torus_embed_np)
         results["topology"] = {
             "betti_0": metrics.betti_0,
             "betti_1": metrics.betti_1,
@@ -226,6 +246,10 @@ def evaluate(
             "intrinsic_dim": metrics.intrinsic_dim_estimate,
             "torus_score": metrics.torus_score,
         }
+        if use_torus_head:
+            results["topology"]["analysis_space"] = "4D_torus_branch"
+        else:
+            results["topology"]["analysis_space"] = "512D_encoder_pca10"
 
         # Covariance metrics
         cov_metrics = compute_covariance_metrics(embeddings)
@@ -267,7 +291,7 @@ def main():
     parser.add_argument("--linear-probe", action="store_true", help="Run linear probing")
     parser.add_argument("--analysis", action="store_true", help="Run topological analysis")
     parser.add_argument("--umap", action="store_true", help="Run UMAP visualization")
-    parser.add_argument("--grid-size", type=int, default=12, help="Torus grid size")
+    parser.add_argument("--grid-size", type=int, default=None, help="Torus grid size (auto-detect from checkpoint if not set)")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
     args = parser.parse_args()
 

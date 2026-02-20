@@ -296,6 +296,195 @@ class ToroidalJEPALoss(nn.Module):
         }
 
 
+class TorusProjectionHead(nn.Module):
+    """Projects 512D encoder output onto T² = S¹×S¹ via cos/sin.
+
+    Architecture: Linear(512→128) → BN → ReLU → Linear(128→2) → scale by 2π
+    Output: angles (B, 2) and torus_embed (B, 4) = (cos θ₁, sin θ₁, cos θ₂, sin θ₂)
+
+    The 4D output lives exactly on S¹×S¹ by construction — no regularization
+    needed to enforce topology; it's a hard architectural constraint.
+    """
+
+    def __init__(self, input_dim: int = 512, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map encoder output to torus.
+
+        Args:
+            z: Encoder output (B, 512).
+
+        Returns:
+            angles: Raw angles in [0, 2π) of shape (B, 2).
+            torus_embed: (cos θ₁, sin θ₁, cos θ₂, sin θ₂) of shape (B, 4).
+        """
+        raw = self.net(z)  # (B, 2)
+        angles = 2.0 * math.pi * torch.sigmoid(raw)  # Map to [0, 2π)
+        cos1 = torch.cos(angles[:, 0])
+        sin1 = torch.sin(angles[:, 0])
+        cos2 = torch.cos(angles[:, 1])
+        sin2 = torch.sin(angles[:, 1])
+        torus_embed = torch.stack([cos1, sin1, cos2, sin2], dim=1)  # (B, 4)
+        return angles, torus_embed
+
+
+class ToroidalStructureLoss(nn.Module):
+    """Topology-aware loss for points on T² embedded in R⁴.
+
+    Two components:
+    1. **Uniformity** (Wang & Isola, 2020): log E[exp(-t·||z_i - z_j||²)]
+       Pushes points to spread uniformly across T². Euclidean distance
+       in R⁴ between points on S¹×S¹ is the correct torus chord metric.
+
+    2. **Spread** (circular correlation penalty): Penalizes correlation
+       between θ₁ and θ₂ to prevent degenerate collapse to a 1D circle.
+       Uses Fisher & Lee (1983) circular correlation coefficient:
+       ρ_circ = E[sin(θ₁-μ₁)·sin(θ₂-μ₂)] / √(E[sin²(θ₁-μ₁)]·E[sin²(θ₂-μ₂)])
+
+    Args:
+        t_uniformity: Temperature for uniformity loss. Default 2.0.
+        spread_weight: Relative weight of spread vs uniformity. Default 1.0.
+    """
+
+    def __init__(self, t_uniformity: float = 2.0, spread_weight: float = 1.0):
+        super().__init__()
+        self.t = t_uniformity
+        self.spread_weight = spread_weight
+
+    def forward(
+        self,
+        angles: torch.Tensor,
+        torus_embed: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Compute uniformity + spread losses.
+
+        Args:
+            angles: (B, 2) raw angles on T².
+            torus_embed: (B, 4) cos/sin embedding on S¹×S¹ ⊂ R⁴.
+
+        Returns:
+            Dict with 'uniformity', 'spread', 'total' losses.
+        """
+        B = torus_embed.shape[0]
+
+        # --- Uniformity loss: log E[exp(-t·||z_i - z_j||²)] ---
+        # Pairwise squared distances in R⁴
+        sq_dists = torch.cdist(torus_embed, torus_embed, p=2).pow(2)  # (B, B)
+        # Mask diagonal
+        mask = ~torch.eye(B, dtype=torch.bool, device=torus_embed.device)
+        # Log-mean-exp for numerical stability
+        neg_dists = -self.t * sq_dists
+        neg_dists = neg_dists.masked_select(mask).view(B, B - 1)
+        uniformity = torch.logsumexp(neg_dists, dim=1).mean() - math.log(B - 1)
+
+        # --- Spread loss: circular correlation penalty ---
+        theta1 = angles[:, 0]  # (B,)
+        theta2 = angles[:, 1]  # (B,)
+        # Circular means
+        mu1 = torch.atan2(torch.sin(theta1).mean(), torch.cos(theta1).mean())
+        mu2 = torch.atan2(torch.sin(theta2).mean(), torch.cos(theta2).mean())
+        # Centered sin
+        s1 = torch.sin(theta1 - mu1)
+        s2 = torch.sin(theta2 - mu2)
+        # Circular correlation coefficient squared
+        num = (s1 * s2).mean()
+        den = torch.sqrt((s1.pow(2).mean()) * (s2.pow(2).mean()) + 1e-8)
+        rho_sq = (num / den).pow(2)
+        spread = rho_sq  # Minimize: push correlation to 0
+
+        total = uniformity + self.spread_weight * spread
+        return {
+            "uniformity": uniformity,
+            "spread": spread,
+            "total": total,
+        }
+
+
+class ToroidalJEPALossV2(nn.Module):
+    """Complete loss for toroidal EB-JEPA with hard torus projection head.
+
+    L = L_pred + λ_std · L_std + λ_torus · (L_uniformity + L_spread)
+
+    The torus losses operate on the 4D S¹×S¹ embedding from the
+    TorusProjectionHead, not on the raw 512D encoder output.
+
+    Args:
+        embed_dim: Embedding dimension for std loss.
+        lambda_std: Weight for std collapse prevention. Default 10.0.
+        lambda_torus: Weight for torus uniformity + spread. Default 10.0.
+        t_uniformity: Temperature for uniformity loss. Default 2.0.
+        spread_weight: Relative weight of spread within torus loss. Default 1.0.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int = 512,
+        lambda_std: float = 10.0,
+        lambda_torus: float = 10.0,
+        t_uniformity: float = 2.0,
+        spread_weight: float = 1.0,
+    ):
+        super().__init__()
+        self.lambda_std = lambda_std
+        self.lambda_torus = lambda_torus
+
+        self.std_loss = StandardDeviationLoss()
+        self.torus_loss = ToroidalStructureLoss(
+            t_uniformity=t_uniformity,
+            spread_weight=spread_weight,
+        )
+
+    def forward(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        encoder_output: torch.Tensor,
+        torus_angles: torch.Tensor | None = None,
+        torus_embed: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Compute all losses.
+
+        Args:
+            predictions: Predictor output (B, D).
+            targets: EMA target encoder output (B, D).
+            encoder_output: Online encoder output (B, D).
+            torus_angles: (B, 2) angles from TorusProjectionHead.
+            torus_embed: (B, 4) cos/sin embedding from TorusProjectionHead.
+
+        Returns:
+            Dict with 'total', 'prediction', 'std', 'uniformity', 'spread' losses.
+        """
+        pred_loss = F.mse_loss(predictions, targets.detach())
+        std_loss = self.std_loss(encoder_output)
+
+        result = {
+            "prediction": pred_loss,
+            "std": std_loss,
+        }
+
+        if torus_angles is not None and torus_embed is not None:
+            torus_losses = self.torus_loss(torus_angles, torus_embed)
+            total = (
+                pred_loss
+                + self.lambda_std * std_loss
+                + self.lambda_torus * torus_losses["total"]
+            )
+            result["uniformity"] = torus_losses["uniformity"]
+            result["spread"] = torus_losses["spread"]
+        else:
+            total = pred_loss + self.lambda_std * std_loss
+
+        result["total"] = total
+        return result
+
+
 class VICRegLoss(nn.Module):
     """Standard VICReg loss for baseline comparison.
 

@@ -35,7 +35,7 @@ try:
 except ImportError:
     yaml = None
 
-from .toroidal_loss import ToroidalJEPALoss, VICRegLoss
+from .toroidal_loss import ToroidalJEPALoss, ToroidalJEPALossV2, VICRegLoss, TorusProjectionHead
 
 
 # ---------------------------------------------------------------------------
@@ -84,14 +84,27 @@ class EBJEPA(nn.Module):
 
     The predictor maps online encoder output to target encoder space.
     Target encoder is updated via exponential moving average.
+
+    When torus_head=True, adds a TorusProjectionHead branch that maps
+    encoder output to S¹×S¹ ⊂ R⁴ for topology-aware training.
     """
 
-    def __init__(self, embed_dim: int = 512, hidden_dim: int = 1024, ema_decay: float = 0.996):
+    def __init__(
+        self,
+        embed_dim: int = 512,
+        hidden_dim: int = 1024,
+        ema_decay: float = 0.996,
+        torus_head: bool = False,
+    ):
         super().__init__()
         self.online_encoder = ResNetEncoder(embed_dim)
         self.target_encoder = copy.deepcopy(self.online_encoder)
         self.predictor = Predictor(embed_dim, hidden_dim)
         self.ema_decay = ema_decay
+
+        self.torus_projection = None
+        if torus_head:
+            self.torus_projection = TorusProjectionHead(input_dim=embed_dim)
 
         # Freeze target encoder
         for p in self.target_encoder.parameters():
@@ -108,16 +121,22 @@ class EBJEPA(nn.Module):
     def forward(self, x1: torch.Tensor, x2: torch.Tensor):
         """Forward pass with two augmented views.
 
-        Returns:
+        Returns (3-tuple or 5-tuple):
             predictions: Predictor output from view 1 (B, D)
             targets: Target encoder output from view 2 (B, D)
             encoder_output: Online encoder output from view 1 (B, D)
+            torus_angles: (B, 2) angles on T² — only when torus_head is active
+            torus_embed: (B, 4) cos/sin on S¹×S¹ — only when torus_head is active
         """
         encoder_output = self.online_encoder(x1)
         predictions = self.predictor(encoder_output)
 
         with torch.no_grad():
             targets = self.target_encoder(x2)
+
+        if self.torus_projection is not None:
+            torus_angles, torus_embed = self.torus_projection(encoder_output)
+            return predictions, targets, encoder_output, torus_angles, torus_embed
 
         return predictions, targets, encoder_output
 
@@ -177,8 +196,16 @@ def train_one_epoch(
         x1, x2 = images
         x1, x2 = x1.to(device), x2.to(device)
 
-        predictions, targets, encoder_output = model(x1, x2)
-        losses = criterion(predictions, targets, encoder_output)
+        outputs = model(x1, x2)
+        if len(outputs) == 5:
+            predictions, targets, encoder_output, torus_angles, torus_embed = outputs
+            losses = criterion(
+                predictions, targets, encoder_output,
+                torus_angles=torus_angles, torus_embed=torus_embed,
+            )
+        else:
+            predictions, targets, encoder_output = outputs
+            losses = criterion(predictions, targets, encoder_output)
 
         optimizer.zero_grad()
         losses["total"].backward()
@@ -226,16 +253,21 @@ def train(config: dict) -> Path:
     # Model
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
+    loss_cfg = config.get("loss", {})
+    loss_type = loss_cfg.get("type", "toroidal")
+    use_torus_head = loss_type == "toroidal_v2"
+
     model = EBJEPA(
         embed_dim=embed_dim,
         hidden_dim=model_cfg.get("hidden_dim", 1024),
         ema_decay=model_cfg.get("ema_decay", 0.996),
+        torus_head=use_torus_head,
     ).to(device)
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+    if use_torus_head:
+        print("Torus projection head: ENABLED (S¹×S¹ ⊂ R⁴)")
 
     # Loss
-    loss_cfg = config.get("loss", {})
-    loss_type = loss_cfg.get("type", "toroidal")
     if loss_type == "vicreg":
         criterion = VICRegLoss(
             embed_dim=embed_dim,
@@ -249,6 +281,14 @@ def train(config: dict) -> Path:
             lambda_std=loss_cfg.get("lambda_std", 25.0),
             lambda_torus=loss_cfg.get("lambda_torus", 1.0),
             penalty_mode=loss_cfg.get("penalty_mode", "distance"),
+        )
+    elif loss_type == "toroidal_v2":
+        criterion = ToroidalJEPALossV2(
+            embed_dim=embed_dim,
+            lambda_std=loss_cfg.get("lambda_std", 10.0),
+            lambda_torus=loss_cfg.get("lambda_torus", 10.0),
+            t_uniformity=loss_cfg.get("t_uniformity", 2.0),
+            spread_weight=loss_cfg.get("spread_weight", 1.0),
         )
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
@@ -274,8 +314,11 @@ def train(config: dict) -> Path:
     )
 
     # Optimizer
+    param_groups = list(model.online_encoder.parameters()) + list(model.predictor.parameters())
+    if model.torus_projection is not None:
+        param_groups += list(model.torus_projection.parameters())
     optimizer = torch.optim.AdamW(
-        list(model.online_encoder.parameters()) + list(model.predictor.parameters()),
+        param_groups,
         lr=train_cfg.get("lr", 1e-3),
         weight_decay=train_cfg.get("weight_decay", 0.05),
     )

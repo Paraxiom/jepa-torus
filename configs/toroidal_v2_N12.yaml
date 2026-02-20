@@ -1,0 +1,33 @@
+# Toroidal V2 with N=12 — hard torus projection head (S¹×S¹ ⊂ R⁴)
+# Balanced loss: λ_std=10, λ_torus=10 (not 25:1 like V1)
+# Analysis runs on 4D torus branch → correct topology detection
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 1.0e-3
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v2
+  grid_size: 12
+  lambda_std: 10.0
+  lambda_torus: 10.0
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v2_N12
+  save_every: 50

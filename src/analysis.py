@@ -113,11 +113,125 @@ def extract_embeddings(
     return embeddings
 
 
+def extract_torus_embeddings(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    max_samples: int = 10000,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Extract torus angles and 4D embeddings from a model with torus head.
+
+    Args:
+        model: Trained JEPA model with .torus_projection attribute.
+        dataloader: DataLoader for evaluation data.
+        device: Torch device.
+        max_samples: Maximum samples.
+
+    Returns:
+        (angles, torus_embed) — each (N, 2) and (N, 4), or (None, None)
+        if the model has no torus head.
+    """
+    if not hasattr(model, "torus_projection") or model.torus_projection is None:
+        return None, None
+
+    model.eval()
+    all_angles = []
+    all_embed = []
+    total = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            if isinstance(batch, (list, tuple)):
+                x = batch[0]
+            else:
+                x = batch
+            x = x.to(device)
+
+            z = model.online_encoder(x)
+            angles, torus_embed = model.torus_projection(z)
+
+            all_angles.append(angles.cpu().numpy())
+            all_embed.append(torus_embed.cpu().numpy())
+            total += z.shape[0]
+            if total >= max_samples:
+                break
+
+    angles = np.concatenate(all_angles, axis=0)[:max_samples]
+    embed = np.concatenate(all_embed, axis=0)[:max_samples]
+    return angles, embed
+
+
+def compute_torus_topology(
+    torus_embed: np.ndarray,
+    n_subsample: int = 3000,
+    persistence_threshold: float = 0.05,
+    verbose: bool = True,
+) -> TopologyMetrics:
+    """Run persistent homology on 4D torus embeddings (S¹×S¹ ⊂ R⁴).
+
+    This is the correct analysis space for V2 models — 3000 points in
+    4D is massive overkill for detecting T² topology (Betti: 1,2,1).
+
+    Args:
+        torus_embed: (N, 4) array of (cos θ₁, sin θ₁, cos θ₂, sin θ₂).
+        n_subsample: Points to subsample (Rips O(n³)).
+        persistence_threshold: Minimum lifetime for significant features.
+        verbose: Print results.
+
+    Returns:
+        TopologyMetrics with Betti numbers from 4D analysis.
+    """
+    from ripser import ripser
+
+    metrics = TopologyMetrics()
+
+    N = torus_embed.shape[0]
+    if N > n_subsample:
+        indices = np.random.choice(N, n_subsample, replace=False)
+        X = torus_embed[indices]
+    else:
+        X = torus_embed
+
+    if verbose:
+        print(f"Running persistent homology on {X.shape[0]} pts in R^{X.shape[1]} (torus branch)")
+
+    # No normalization needed — points already on S¹×S¹ (norm ≈ √2)
+    result = ripser(X, maxdim=2)
+    diagrams = result["dgms"]
+
+    for dim, dgm in enumerate(diagrams):
+        if len(dgm) == 0:
+            continue
+        finite = dgm[np.isfinite(dgm[:, 1])]
+        lifetimes = finite[:, 1] - finite[:, 0] if len(finite) > 0 else np.array([])
+        significant = (lifetimes > persistence_threshold).sum()
+
+        if dim == 0:
+            metrics.betti_0 = 1 + int(significant)
+            metrics.persistence_h0 = [tuple(p) for p in finite]
+        elif dim == 1:
+            metrics.betti_1 = int(significant)
+            metrics.persistence_h1 = [tuple(p) for p in finite]
+        elif dim == 2:
+            metrics.betti_2 = int(significant)
+            metrics.persistence_h2 = [tuple(p) for p in finite]
+
+    metrics.mean_norm = float(np.linalg.norm(torus_embed, axis=1).mean())
+    metrics.std_norm = float(np.linalg.norm(torus_embed, axis=1).std())
+    metrics.intrinsic_dim_estimate = 2.0  # By construction
+
+    if verbose:
+        print(f"Torus 4D analysis — β₀={metrics.betti_0}, β₁={metrics.betti_1}, β₂={metrics.betti_2}")
+
+    return metrics
+
+
 def compute_persistent_homology(
     embeddings: np.ndarray,
     max_dim: int = 2,
     n_subsample: int = 1000,
     max_edge_length: float = float("inf"),
+    use_pca: int | None = None,
 ) -> TopologyMetrics:
     """Compute persistent homology of embedding point cloud.
 
@@ -128,12 +242,13 @@ def compute_persistent_homology(
         max_dim: Maximum homology dimension (2 for torus detection).
         n_subsample: Number of points to subsample (Rips is O(n³)).
         max_edge_length: Maximum edge length in Rips complex.
+        use_pca: If set, PCA-reduce to this many dimensions before persistence.
+            Helps with high-D embeddings where covering number is exponential.
 
     Returns:
         TopologyMetrics with Betti numbers and persistence diagrams.
     """
     from ripser import ripser
-    from persim import bottleneck
 
     metrics = TopologyMetrics()
 
@@ -144,6 +259,11 @@ def compute_persistent_homology(
         X = embeddings[indices]
     else:
         X = embeddings
+
+    # Optional PCA reduction (helps high-D → tractable persistence)
+    if use_pca is not None and X.shape[1] > use_pca:
+        from sklearn.decomposition import PCA
+        X = PCA(n_components=use_pca).fit_transform(X)
 
     # Normalize to unit sphere for better persistence
     norms = np.linalg.norm(X, axis=1, keepdims=True)
@@ -383,16 +503,21 @@ def full_analysis(
     embeddings: np.ndarray,
     grid_size: int = 12,
     verbose: bool = True,
+    torus_embed: np.ndarray | None = None,
 ) -> TopologyMetrics:
     """Run complete topological analysis pipeline.
 
     Combines persistent homology, spectral analysis, covariance metrics,
     and intrinsic dimension estimation.
 
+    When torus_embed is provided (V2 models), runs persistent homology
+    on the 4D S¹×S¹ data instead of the 512D encoder space.
+
     Args:
-        embeddings: (N, D) array.
+        embeddings: (N, D) array — 512D encoder output.
         grid_size: Torus grid size for comparison.
         verbose: Print results.
+        torus_embed: (N, 4) array from TorusProjectionHead, or None.
 
     Returns:
         TopologyMetrics with all fields populated.
@@ -400,12 +525,17 @@ def full_analysis(
     if verbose:
         print(f"Analyzing {embeddings.shape[0]} embeddings of dim {embeddings.shape[1]}")
 
-    # Persistent homology
-    if verbose:
-        print("Computing persistent homology...")
-    metrics = compute_persistent_homology(embeddings)
+    # Persistent homology — choose analysis space
+    if torus_embed is not None:
+        if verbose:
+            print("Computing persistent homology on 4D torus branch...")
+        metrics = compute_torus_topology(torus_embed, verbose=verbose)
+    else:
+        if verbose:
+            print("Computing persistent homology (PCA→10D fallback)...")
+        metrics = compute_persistent_homology(embeddings, use_pca=10)
 
-    # Spectral analysis
+    # Spectral analysis (always on encoder space)
     if verbose:
         print("Computing spectral analysis...")
     spectral = compute_spectral_analysis(embeddings, grid_size=grid_size)
@@ -417,11 +547,15 @@ def full_analysis(
     # Intrinsic dimension
     if verbose:
         print("Estimating intrinsic dimension...")
-    metrics.intrinsic_dim_estimate = compute_intrinsic_dimension(embeddings)
+    if torus_embed is not None:
+        metrics.intrinsic_dim_estimate = compute_intrinsic_dimension(torus_embed)
+    else:
+        metrics.intrinsic_dim_estimate = compute_intrinsic_dimension(embeddings)
 
     if verbose:
+        analysis_space = "4D torus branch" if torus_embed is not None else "512D encoder"
         print(f"\n{'='*50}")
-        print("TOPOLOGICAL ANALYSIS RESULTS")
+        print(f"TOPOLOGICAL ANALYSIS RESULTS ({analysis_space})")
         print(f"{'='*50}")
         print(f"Betti numbers: β₀={metrics.betti_0}, β₁={metrics.betti_1}, β₂={metrics.betti_2}")
         print(f"Torus signature (1,2,1): {'YES' if metrics.has_torus_signature else 'NO'}")
