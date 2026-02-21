@@ -4,9 +4,9 @@ Toroidal Geometry in Joint-Embedding Predictive Architectures: From Logit Bias t
 
 Replaces VICReg's isotropic covariance penalty in EB-JEPA with a geometry-aware regularizer based on the N x N torus Laplacian (Tonnetz geometry). The torus spectral gap provides a provable lower bound on representation diversity.
 
-## Results (Feb 20, 2026)
+## Results (Feb 21, 2026)
 
-All 7 configs trained on CIFAR-10 (300 epochs, RTX 4090). V1 uses soft covariance shaping in 512D encoder space. V2 adds a hard torus projection head mapping to S1xS1 in R4.
+8 configs trained on CIFAR-10 (RTX 4090). V1 uses soft covariance shaping in 512D encoder space. V2 adds a hard torus projection head mapping to S1xS1 in R4. V3 uses curriculum learning (freeze encoder, train torus head, then fine-tune).
 
 | Config | Accuracy | Eff.Rank | Spec.Gap | Torus Score | Betti (b0,b1,b2) | Intrinsic Dim |
 |--------|----------|----------|----------|-------------|-------------------|---------------|
@@ -17,6 +17,19 @@ All 7 configs trained on CIFAR-10 (300 epochs, RTX 4090). V1 uses soft covarianc
 | toroidal_N12 | 71.47% | 41.45 | 0.9974 | 0.0000 | (999,164,3) | 8.6 |
 | toroidal_v2_N12 | 44.68% | 7.09 | 0.0574 | **0.1071** | (845,112,**1**) | **1.9** |
 | toroidal_v2_N8 | 42.54% | 7.26 | 0.0513 | **0.0437** | (872,120,**1**) | **1.9** |
+| toroidal_v3_N12 | **72.18%** | 93.58 | 1.2682 | 0.0000 | (916,132,**1**) | **2.0** |
+
+### Key Finding: Accuracy-Topology Pareto Frontier
+
+There is a hard tradeoff between linear probe accuracy and toroidal connectivity. No training strategy tested (soft shaping, hard projection, curriculum learning) breaks this tradeoff when the prediction path bypasses the torus:
+
+| Strategy | Accuracy | Torus Connectivity (b0) | Torus Geometry (b2, dim) |
+|----------|----------|------------------------|--------------------------|
+| V1: Soft shaping | 72% | None (b0~1000) | None (dim~8.5) |
+| V2: Hard projection | 44% | Partial (b0~850) | **Yes** (b2=1, dim=1.9) |
+| V3: Curriculum | 72% | None (b0~916) | **Yes** (b2=1, dim=2.0) |
+
+**Root cause**: The encoder->predictor path bypasses the torus head. The encoder is free to spread representations across all 512 dimensions regardless of torus structure. When fine-tuned (V3 Phase 2), the encoder overpowers the torus head and reverts to baseline behavior.
 
 ### V1 Findings (Soft Covariance Shaping)
 
@@ -44,20 +57,36 @@ V2 adds `TorusProjectionHead`: Linear(512->128)->BN->ReLU->Linear(128->2)->sigmo
 - **Spectral gap ratio ~0.1-0.2** (should be ~1.0) — clusters don't form a connected manifold
 - **Diagnosis**: Prediction loss dominates and creates class-conditional clusters on the torus. The Wang-Isola uniformity loss (lambda_torus=10) isn't strong enough to connect them
 
-### V3 Design Direction (Next)
+### V3 Findings (Curriculum Learning)
 
-The V2 results confirm the hard constraint approach is correct (intrinsic dim, b2) but needs better training strategy.
+V3 loads a pretrained baseline_vicreg encoder (72% accuracy), freezes it, trains only the torus head for 200 epochs with 5x stronger uniformity (lambda_torus=50), then unfreezes and fine-tunes everything for 100 epochs.
 
-**Curriculum learning (recommended):**
-1. Phase 1 (epochs 1-200): Train encoder only with VICReg/SigReg loss -> 72% accuracy
-2. Phase 2 (epochs 200-400): Freeze encoder, train only torus head with 10x uniformity weight
-3. Phase 3 (epochs 400-500): Fine-tune both with balanced losses
+**What worked:**
+- **Accuracy fully recovered**: 72.18% (vs 44.68% in V2) — curriculum preserves encoder quality
+- **Torus geometry preserved**: b2=1, intrinsic dim=2.0 — hard constraint still holds
+- **Training stable**: Phase 1 loss converged to -158 (strong uniformity), Phase 2 stabilized at -62
 
-**Alternative approaches:**
-- **Contrastive torus loss**: Pull same-class points together on the torus, push different-class apart (supervised signal)
-- **Spectral connectivity loss**: Penalize Fiedler value of k-NN graph on torus embeddings (directly optimizes b0->1)
-- **Temperature annealing**: Start with very high uniformity weight, decay as torus structure forms
-- **Larger torus head**: Add capacity (256->64->2 instead of 128->2) so encoder doesn't sacrifice representations
+**What didn't work:**
+- **Torus connectivity destroyed**: b0=916 (worse than V2's 845) — Phase 2 re-fragmented the manifold
+- **Torus score = 0.0000** — spectral gap ratio 4.73 (vs V2's 0.2) indicates over-connected but fragmented clusters
+- **Effective rank reverted**: 93.58 (vs V2's 7.09) — encoder spread back across all 512D when unfrozen
+- **Diagnosis**: The prediction loss path (encoder->predictor) bypasses the torus head entirely. When the encoder unfreezes, it has no incentive to maintain torus-compatible representations
+
+### V4 Design Direction (Next)
+
+The V1-V3 progression proves that the prediction path must flow **through** the torus to break the accuracy-topology tradeoff. Two approaches:
+
+**A. Toroidal prediction (recommended):**
+- Route predictions through torus coordinates: encoder -> torus head -> predictor
+- The predictor operates in torus space (S1xS1), not in 512D encoder space
+- Forces the encoder to produce torus-compatible representations to maintain prediction accuracy
+- Risk: 4D torus space may be too low-dimensional for prediction. May need higher-dimensional torus (T^k for k>2)
+
+**B. Dual-path with torus bottleneck:**
+- Keep the 512D prediction path but add a torus bottleneck: encoder -> torus -> decoder -> predictor
+- Information must pass through the torus to reach the predictor
+- Preserves high-dimensional prediction capacity while forcing torus structure
+- Similar to VQ-VAE bottleneck but with toroidal geometry instead of discrete codes
 
 ## Quick Start
 
@@ -91,6 +120,7 @@ nohup bash run_all.sh > run_all.log 2>&1 &
 | `toroidal_N16` | Toroidal V1 | 16x16 | - | Gentle penalty gradient (lambda_1=0.152) |
 | `toroidal_v2_N12` | Toroidal V2 | 12x12 | S1xS1 | Hard torus projection + uniformity |
 | `toroidal_v2_N8` | Toroidal V2 | 8x8 | S1xS1 | Hard torus projection + uniformity |
+| `toroidal_v3_N12` | Curriculum | 12x12 | S1xS1 | Pretrained encoder + 2-phase curriculum |
 
 ## Evaluation Metrics
 
@@ -148,6 +178,7 @@ jepa-torus/
 │       └── ToroidalRegularizer.lean
 ├── run_all.sh             # Full 7-config training pipeline
 ├── run_v2_remaining.sh    # V2 eval + N8 training
+├── run_v3.sh              # V3 curriculum training + eval
 └── requirements.txt
 ```
 
