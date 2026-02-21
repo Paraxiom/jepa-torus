@@ -1,0 +1,44 @@
+# V6b: Dual-path with softer torus weights
+#
+# V6a got 32.7% (up from 20% bottleneck) but lambda_karmonic=5.0 and
+# lambda_std=25.0 were too strong — torus branch overpowered 512D prediction.
+#
+# V6b: let 512D prediction dominate, torus branch gently shapes topology.
+#   lambda_karmonic: 5.0 -> 1.0 (5x softer)
+#   lambda_std: 25.0 -> 10.0 (2.5x softer)
+#   lambda_torus_pred: 0.5 -> 0.25 (torus prediction even more secondary)
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+  torus_dim: 2
+  n_modes: 6
+  torus_hidden: 128
+  predictor_hidden: 256
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v6
+  grid_size: 12
+  lambda_std: 10.0            # 25 -> 10 (let encoder spread naturally)
+  lambda_torus_pred: 0.25     # 0.5 -> 0.25 (gentle torus prediction)
+  lambda_karmonic: 1.0        # 5.0 -> 1.0 (gentle Karmonic filter)
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v6b_soft
+  save_every: 50
