@@ -121,6 +121,88 @@ def linear_probe(
     }
 
 
+def torus_linear_probe(
+    model,
+    train_loader: DataLoader,
+    test_loader: DataLoader,
+    device: torch.device,
+    num_classes: int = 10,
+    epochs: int = 100,
+    lr: float = 0.01,
+) -> dict:
+    """Train a linear probe on frozen TORUS coordinates (not encoder).
+
+    This evaluates whether discriminative information lives in the torus
+    embedding (4D for T², 10D for T⁵) rather than the 512D encoder output.
+    Critical for bottleneck architectures (V4/V4b) where the encoder
+    collapses its 512D output.
+    """
+    model.eval()
+    torus_proj = model.torus_projection
+
+    # Detect torus embedding dimension from a single batch
+    with torch.no_grad():
+        sample_imgs, _ = next(iter(train_loader))
+        sample_imgs = sample_imgs.to(device)
+        sample_enc = model.online_encoder(sample_imgs)
+        _, sample_torus = torus_proj(sample_enc)
+        torus_embed_dim = sample_torus.shape[1]
+    print(f"  Torus probe: {torus_embed_dim}D torus coordinates")
+
+    probe = LinearProbe(torus_embed_dim, num_classes).to(device)
+    optimizer = torch.optim.SGD(probe.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    criterion = nn.CrossEntropyLoss()
+
+    history = []
+    best_test_acc = 0.0
+
+    for epoch in range(1, epochs + 1):
+        probe.train()
+        correct, total = 0, 0
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            with torch.no_grad():
+                enc = model.online_encoder(images)
+                _, torus_embed = torus_proj(enc)
+            logits = probe(torus_embed)
+            loss = criterion(logits, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            correct += (logits.argmax(1) == labels).sum().item()
+            total += labels.size(0)
+        train_acc = correct / total
+
+        probe.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images, labels = images.to(device), labels.to(device)
+                enc = model.online_encoder(images)
+                _, torus_embed = torus_proj(enc)
+                logits = probe(torus_embed)
+                correct += (logits.argmax(1) == labels).sum().item()
+                total += labels.size(0)
+        test_acc = correct / total
+        best_test_acc = max(best_test_acc, test_acc)
+
+        scheduler.step()
+
+        if epoch % 10 == 0 or epoch == epochs:
+            print(f"  Torus probe epoch {epoch}/{epochs}: train={train_acc:.4f} test={test_acc:.4f}")
+
+        history.append({"epoch": epoch, "train_acc": train_acc, "test_acc": test_acc})
+
+    return {
+        "best_test_acc": best_test_acc,
+        "final_test_acc": test_acc,
+        "final_train_acc": train_acc,
+        "torus_embed_dim": torus_embed_dim,
+        "history": history,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Embedding extraction with standard transforms
 # ---------------------------------------------------------------------------
@@ -243,13 +325,22 @@ def evaluate(
 
     # Linear probe (always on 512D encoder)
     if run_linear_probe:
-        print("\n--- Linear Probing ---")
+        print("\n--- Linear Probing (512D encoder) ---")
         probe_results = linear_probe(
             model, train_loader, test_loader, device,
             embed_dim=embed_dim, num_classes=10,
         )
         results["linear_probe"] = probe_results
-        print(f"Best test accuracy: {probe_results['best_test_acc']:.4f}")
+        print(f"Best test accuracy (encoder): {probe_results['best_test_acc']:.4f}")
+
+        # Torus linear probe (on torus coordinates, if available)
+        if use_torus_head and hasattr(model, 'torus_projection') and model.torus_projection is not None:
+            print("\n--- Linear Probing (torus coordinates) ---")
+            torus_probe_results = torus_linear_probe(
+                model, train_loader, test_loader, device, num_classes=10,
+            )
+            results["torus_probe"] = torus_probe_results
+            print(f"Best test accuracy (torus): {torus_probe_results['best_test_acc']:.4f}")
 
     # Extract embeddings for analysis
     torus_embed_np = None
