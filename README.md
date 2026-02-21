@@ -18,6 +18,8 @@ Replaces VICReg's isotropic covariance penalty in EB-JEPA with a geometry-aware 
 | toroidal_v2_N12 | 44.68% | 7.09 | 0.0574 | **0.1071** | (845,112,**1**) | **1.9** |
 | toroidal_v2_N8 | 42.54% | 7.26 | 0.0513 | **0.0437** | (872,120,**1**) | **1.9** |
 | toroidal_v3_N12 | **72.18%** | 93.58 | 1.2682 | 0.0000 | (916,132,**1**) | **2.0** |
+| toroidal_v4_N12 | 27.81% | 4.22 | 0.0406 | 0.0758 | (816,98,**3**) | **1.8** |
+| toroidal_v4b_T5 | 19.77% | 5.45 | 1.4209 | 0.0000 | (1000,1133,1576) | **5.3** |
 
 ### Key Finding: Accuracy-Topology Pareto Frontier
 
@@ -28,8 +30,14 @@ There is a hard tradeoff between linear probe accuracy and toroidal connectivity
 | V1: Soft shaping | 72% | None (b0~1000) | None (dim~8.5) |
 | V2: Hard projection | 44% | Partial (b0~850) | **Yes** (b2=1, dim=1.9) |
 | V3: Curriculum | 72% | None (b0~916) | **Yes** (b2=1, dim=2.0) |
+| V4: T² bottleneck | 28% | Better (b0=816) | **Yes** (b2=3, dim=1.8) |
+| V4b: T⁵ bottleneck | 20% | None (b0=1000) | **Yes** (dim=5.3) |
 
-**Root cause**: The encoder->predictor path bypasses the torus head. The encoder is free to spread representations across all 512 dimensions regardless of torus structure. When fine-tuned (V3 Phase 2), the encoder overpowers the torus head and reverts to baseline behavior.
+**Root cause**: Two failure modes identified:
+1. **(V2/V3)** Encoder->predictor path bypasses the torus. Encoder reverts to 512D spread.
+2. **(V4/V4b)** Bottleneck forces ALL info through torus, but encoder 512D output collapses — discriminative information is trapped in torus coordinates, invisible to the 512D linear probe.
+
+**Implication**: Linear probing on 512D encoder measures the wrong thing for bottleneck architectures. The torus coordinates themselves (4D or 10D) may contain discriminative features. Next step: run linear probe on torus output.
 
 ### V1 Findings (Soft Covariance Shaping)
 
@@ -87,6 +95,25 @@ The V1-V3 progression proves that the prediction path must flow **through** the 
 - Information must pass through the torus to reach the predictor
 - Preserves high-dimensional prediction capacity while forcing torus structure
 - Similar to VQ-VAE bottleneck but with toroidal geometry instead of discrete codes
+
+### V4/V4b Findings (Torus Bottleneck)
+
+V4 routes ALL prediction through the torus: encoder -> torus_head (4D) -> predictor (4D) -> target.
+V4b generalizes to T^5 (10D). Both use pretrained baseline encoder + 300 epoch training.
+
+**What worked:**
+- **V4**: Best β₀ (816), encoder eff.rank compressed to 4.22 — bottleneck forces torus structure
+- **V4b**: Intrinsic dim = 5.29 (target: 5.0) — T^5 geometry formed correctly
+
+**What didn't work:**
+- **Accuracy collapsed** (V4: 28%, V4b: 20%) — worse than V2 (44%)
+- **512D encoder representation is empty** — all info pushed through the torus bottleneck
+- **Linear probe measures the wrong space** — evaluates 512D encoder, but discriminative info is in torus coords
+
+**Key insight**: The bottleneck works TOO well. The encoder collapses its 512D output because the only gradient signal goes through the narrow torus. Need to either:
+1. **Probe on torus coordinates** (4D or 10D) — may reveal hidden discriminative power
+2. **Add a 512D reconstruction path** — encoder -> torus -> decoder -> 512D, forcing the encoder to maintain rich representations that are ALSO torus-compatible
+3. **Regularize encoder diversity** — stronger std/VICReg loss on 512D to keep it informative
 
 ## Quick Start
 
