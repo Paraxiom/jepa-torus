@@ -1,0 +1,46 @@
+# V5: Multi-mode Fourier Torus with Karmonic Spectral Filtering
+#
+# Key innovation: each angle theta gets Fourier-expanded into m modes:
+#   (cos theta, sin theta, cos 2theta, sin 2theta, ..., cos m*theta, sin m*theta)
+#
+# Mode-weighted uniformity (Karmonic filter, Theorem 12.1):
+#   Mode 1 (fundamental): weight=0.000 -> NO uniformity, class clustering preserved
+#   Mode 2:               weight=0.196 -> mild uniformity
+#   Mode 3:               weight=0.464 -> moderate
+#   Mode 4+:              weight>0.732 -> strong uniformity, torus coverage enforced
+#
+# T^2 with 6 modes = 24D embedding (vs 4D in V2, 10D in V4b)
+# Expected: ~1.5h on RTX 4090
+
+model:
+  embed_dim: 512
+  ema_decay: 0.996
+  torus_dim: 2              # T^2 = S^1 x S^1 (2 circles)
+  n_modes: 6                # 6 Fourier modes per circle -> 24D total
+  torus_hidden: 128         # projection head hidden dim
+  predictor_hidden: 256     # Fourier predictor hidden dim (larger for 24D input)
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v5
+  grid_size: 12             # N for Karmonic eigenvalue computation
+  lambda_std: 5.0           # Std on 512D encoder (collapse prevention)
+  lambda_karmonic: 15.0     # Karmonic-filtered uniformity + spread
+  t_uniformity: 2.0         # Wang-Isola temperature
+  spread_weight: 1.0        # Circular decorrelation between theta_1, theta_2
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v5_fourier
+  save_every: 50
