@@ -1,0 +1,45 @@
+# V5b: Fourier Torus + Karmonic Filter + ANGLE-SPACE prediction
+#
+# V5a used Fourier-space MSE for prediction, which gives high modes
+# n× larger gradients (d/dθ cos(nθ) = -n·sin(nθ)), drowning class info.
+#
+# V5b fixes this: prediction uses circular distance on raw angles:
+#   L_pred = mean(1 - cos(θ_pred - θ_target))
+# This treats all classes equally — no high-frequency gradient bias.
+#
+# Karmonic uniformity still operates on Fourier coords (mode-weighted).
+# Low modes: preserve class clusters. High modes: enforce torus coverage.
+
+model:
+  embed_dim: 512
+  ema_decay: 0.996
+  torus_dim: 2              # T^2 = S^1 x S^1
+  n_modes: 6                # 6 Fourier modes per circle -> 24D Fourier embedding
+  torus_hidden: 128
+  predictor_hidden: 256
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v5
+  grid_size: 12
+  lambda_std: 5.0
+  lambda_karmonic: 15.0
+  t_uniformity: 2.0
+  spread_weight: 1.0
+  pred_in_angle_space: true  # KEY CHANGE: circular distance on angles
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v5b_angles
+  save_every: 50

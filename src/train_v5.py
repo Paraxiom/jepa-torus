@@ -167,14 +167,15 @@ class FourierPredictor(nn.Module):
 
         self.register_buffer("modes", torch.arange(1, n_modes + 1).float())
 
-    def forward(self, fourier_embed: torch.Tensor) -> torch.Tensor:
-        """Predict target Fourier coordinates.
+    def forward(self, fourier_embed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Predict target angles (and optionally Fourier-expand them).
 
         Args:
             fourier_embed: (B, 2km) online Fourier coordinates.
 
         Returns:
-            (B, 2km) predicted target Fourier coordinates.
+            predicted_angles: (B, k) predicted target angles.
+            predicted_fourier: (B, 2km) predicted target Fourier coordinates.
         """
         raw = self.net(fourier_embed)  # (B, k)
         angles = 2.0 * math.pi * torch.sigmoid(raw)
@@ -184,7 +185,7 @@ class FourierPredictor(nn.Module):
         cos_vals = torch.cos(n_angles).permute(0, 2, 1)  # (B, m, k)
         sin_vals = torch.sin(n_angles).permute(0, 2, 1)  # (B, m, k)
         fourier = torch.stack([cos_vals, sin_vals], dim=-1)  # (B, m, k, 2)
-        return fourier.reshape(fourier_embed.shape[0], -1)  # (B, 2km)
+        return angles, fourier.reshape(fourier_embed.shape[0], -1)  # (B, 2km)
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +392,9 @@ class EBJEPA_V5(nn.Module):
         """Forward pass through Fourier torus bottleneck.
 
         Returns:
+            predicted_angles: (B, k) predicted target angles
             predicted_fourier: (B, 2km) predicted target Fourier coords
+            target_angles: (B, k) actual target angles
             target_fourier: (B, 2km) actual target Fourier coords
             encoder_output: (B, 512) online encoder output (for std loss)
             online_angles: (B, k) online torus angles
@@ -400,15 +403,17 @@ class EBJEPA_V5(nn.Module):
         # Online path
         encoder_output = self.online_encoder(x1)
         online_angles, online_fourier = self.torus_projection(encoder_output)
-        predicted_fourier = self.fourier_predictor(online_fourier)
+        predicted_angles, predicted_fourier = self.fourier_predictor(online_fourier)
 
         # Target path
         with torch.no_grad():
             target_enc = self.target_encoder(x2)
-            _, target_fourier = self.target_torus_projection(target_enc)
+            target_angles, target_fourier = self.target_torus_projection(target_enc)
 
         return (
+            predicted_angles,
             predicted_fourier,
+            target_angles,
             target_fourier,
             encoder_output,
             online_angles,
@@ -441,10 +446,12 @@ class KarmonicBottleneckLoss(nn.Module):
         lambda_karmonic: float = 15.0,
         t_uniformity: float = 2.0,
         spread_weight: float = 1.0,
+        pred_in_angle_space: bool = False,
     ):
         super().__init__()
         self.lambda_std = lambda_std
         self.lambda_karmonic = lambda_karmonic
+        self.pred_in_angle_space = pred_in_angle_space
 
         self.std_loss = StandardDeviationLoss()
         self.karmonic_loss = KarmonicFilterLoss(
@@ -457,14 +464,21 @@ class KarmonicBottleneckLoss(nn.Module):
 
     def forward(
         self,
+        predicted_angles: torch.Tensor,
         predicted_fourier: torch.Tensor,
+        target_angles: torch.Tensor,
         target_fourier: torch.Tensor,
         encoder_output: torch.Tensor,
         online_angles: torch.Tensor,
         online_fourier: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        # Prediction loss: MSE in full Fourier space
-        pred_loss = F.mse_loss(predicted_fourier, target_fourier.detach())
+        if self.pred_in_angle_space:
+            # Circular distance: mean(1 - cos(θ_pred - θ_target)) per circle
+            # Equivalent to chord distance on S¹, no high-mode gradient bias
+            pred_loss = (1.0 - torch.cos(predicted_angles - target_angles.detach())).mean()
+        else:
+            # MSE in full Fourier space (V5a behavior)
+            pred_loss = F.mse_loss(predicted_fourier, target_fourier.detach())
 
         # Std loss on 512D encoder
         std_loss = self.std_loss(encoder_output)
@@ -574,6 +588,7 @@ def train_v5(config: dict) -> Path:
     )
 
     # Loss
+    pred_in_angle_space = loss_cfg.get("pred_in_angle_space", False)
     criterion = KarmonicBottleneckLoss(
         torus_dim=torus_dim,
         n_modes=n_modes,
@@ -582,7 +597,12 @@ def train_v5(config: dict) -> Path:
         lambda_karmonic=loss_cfg.get("lambda_karmonic", 15.0),
         t_uniformity=loss_cfg.get("t_uniformity", 2.0),
         spread_weight=loss_cfg.get("spread_weight", 1.0),
+        pred_in_angle_space=pred_in_angle_space,
     )
+    if pred_in_angle_space:
+        print("Prediction: ANGLE SPACE (circular distance, no high-mode bias)")
+    else:
+        print("Prediction: FOURIER SPACE (MSE on all modes)")
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
