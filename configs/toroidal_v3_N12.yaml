@@ -1,0 +1,44 @@
+# V3 Curriculum: pretrained encoder -> torus head -> fine-tune
+# Expected: ~1h on RTX 4090
+
+pretrained_checkpoint: "checkpoints/baseline_vicreg/best.pt"
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+
+training:
+  batch_size: 256
+  num_workers: 4
+  seed: 42
+
+# Phase 1: Freeze encoder, train torus head with strong uniformity
+phase1:
+  epochs: 200
+  lr: 0.003
+  lambda_std: 1.0        # Low prediction weight (encoder frozen anyway)
+  lambda_torus: 50.0     # 5x stronger than V2 (was 10)
+  t_uniformity: 2.0
+  spread_weight: 2.0     # 2x spread penalty to prevent 1D collapse
+
+# Phase 2: Unfreeze encoder, fine-tune with balanced losses
+phase2:
+  epochs: 100
+  lr: 0.0003             # 10x lower than phase 1
+  lambda_std: 10.0       # Restore prediction importance
+  lambda_torus: 20.0     # Keep torus dominant but not overwhelming
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+loss:
+  type: toroidal_v2
+  grid_size: 12
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v3_N12
+  save_every: 50
