@@ -19,11 +19,15 @@ from torchvision import datasets, transforms
 
 from .train import EBJEPA
 
-# V4 model import (optional — only needed for V4 checkpoints)
+# V4/V4b model imports (optional — only needed for V4+ checkpoints)
 try:
     from .train_v4 import EBJEPA_V4
 except ImportError:
     EBJEPA_V4 = None
+try:
+    from .train_v4b import EBJEPA_V4b
+except ImportError:
+    EBJEPA_V4b = None
 from .analysis import (
     extract_embeddings,
     extract_torus_embeddings,
@@ -193,10 +197,22 @@ def evaluate(
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
     loss_type = loss_cfg.get("type", "toroidal")
-    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4")
+    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b")
     is_v4 = loss_type == "toroidal_v4"
+    is_v4b = loss_type == "toroidal_v4b"
 
-    if is_v4 and EBJEPA_V4 is not None:
+    if is_v4b and EBJEPA_V4b is not None:
+        model = EBJEPA_V4b(
+            embed_dim=embed_dim,
+            ema_decay=model_cfg.get("ema_decay", 0.996),
+            torus_dim=model_cfg.get("torus_dim", 5),
+            torus_hidden=model_cfg.get("torus_hidden", 128),
+            predictor_hidden=model_cfg.get("predictor_hidden", 128),
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        torus_dim = model_cfg.get("torus_dim", 5)
+        print(f"V4b T^{torus_dim} model: DETECTED ({2*torus_dim}D torus embedding)")
+    elif is_v4 and EBJEPA_V4 is not None:
         model = EBJEPA_V4(
             embed_dim=embed_dim,
             hidden_dim=model_cfg.get("hidden_dim", 1024),

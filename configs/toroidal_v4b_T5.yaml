@@ -1,0 +1,38 @@
+# V4b: T^5 bottleneck (10D embedding on S¹×S¹×S¹×S¹×S¹)
+# V4 (T^2, 4D) proved bottleneck works but 4D too tight for 10 classes
+# T^5 gives 10D — enough capacity while maintaining torus topology
+# Expected: ~1.5h on RTX 4090
+
+pretrained_checkpoint: "checkpoints/baseline_vicreg/best.pt"
+
+model:
+  embed_dim: 512
+  ema_decay: 0.996
+  torus_dim: 5              # T^5 = S¹×S¹×S¹×S¹×S¹ → 10D embedding
+  torus_hidden: 128         # projection head hidden dim
+  predictor_hidden: 128     # torus predictor hidden dim
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v4b
+  grid_size: 12
+  lambda_std: 5.0           # Mild std on 512D encoder
+  lambda_torus: 25.0        # Strong uniformity on T^5
+  t_uniformity: 2.0
+  spread_weight: 1.0        # Decorrelate all 10 angle pairs
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v4b_T5
+  save_every: 50
