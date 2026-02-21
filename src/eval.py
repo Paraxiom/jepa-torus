@@ -32,6 +32,10 @@ try:
     from .train_v5 import EBJEPA_V5
 except ImportError:
     EBJEPA_V5 = None
+try:
+    from .train_v6 import EBJEPA_V6
+except ImportError:
+    EBJEPA_V6 = None
 from .analysis import (
     extract_embeddings,
     extract_torus_embeddings,
@@ -283,12 +287,28 @@ def evaluate(
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
     loss_type = loss_cfg.get("type", "toroidal")
-    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5")
+    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5", "toroidal_v6")
     is_v4 = loss_type == "toroidal_v4"
     is_v4b = loss_type == "toroidal_v4b"
     is_v5 = loss_type == "toroidal_v5"
+    is_v6 = loss_type == "toroidal_v6"
 
-    if is_v5 and EBJEPA_V5 is not None:
+    if is_v6 and EBJEPA_V6 is not None:
+        torus_dim = model_cfg.get("torus_dim", 2)
+        n_modes = model_cfg.get("n_modes", 6)
+        model = EBJEPA_V6(
+            embed_dim=embed_dim,
+            hidden_dim=model_cfg.get("hidden_dim", 1024),
+            ema_decay=model_cfg.get("ema_decay", 0.996),
+            torus_dim=torus_dim,
+            n_modes=n_modes,
+            torus_hidden=model_cfg.get("torus_hidden", 128),
+            predictor_hidden=model_cfg.get("predictor_hidden", 256),
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        fourier_dim = 2 * torus_dim * n_modes
+        print(f"V6 Dual-path: 512D + T^{torus_dim} x {n_modes} modes = {fourier_dim}D")
+    elif is_v5 and EBJEPA_V5 is not None:
         torus_dim = model_cfg.get("torus_dim", 2)
         n_modes = model_cfg.get("n_modes", 6)
         model = EBJEPA_V5(

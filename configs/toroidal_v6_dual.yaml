@@ -1,0 +1,48 @@
+# V6: Dual-Path — 512D prediction (accuracy) + Fourier torus (topology)
+#
+# V1-V5 showed a hard tradeoff:
+#   512D-only prediction: 72% accuracy, 0 topology
+#   Torus-only bottleneck: 20% accuracy, rich topology
+#
+# V6 runs BOTH simultaneously. The encoder serves two masters:
+#   Path 1: encoder -> predictor_512 -> target_512 (accuracy)
+#   Path 2: encoder -> FourierTorusHead -> torus_predictor -> target_angles (topology)
+#
+# Karmonic filter still active on Fourier coords:
+#   Mode 1: weight=0.00 (class discrimination preserved)
+#   Mode 6: weight=1.00 (torus coverage enforced)
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024           # 512D predictor hidden dim
+  ema_decay: 0.996
+  torus_dim: 2               # T^2 = S^1 x S^1
+  n_modes: 6                 # 6 Fourier modes per circle -> 24D
+  torus_hidden: 128          # torus projection head hidden dim
+  predictor_hidden: 256      # torus predictor hidden dim
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v6
+  grid_size: 12
+  lambda_std: 25.0           # VICReg std on 512D (standard)
+  lambda_torus_pred: 0.5     # Torus angle prediction (secondary to 512D)
+  lambda_karmonic: 5.0       # Karmonic-filtered uniformity (moderate)
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v6_dual
+  save_every: 50
