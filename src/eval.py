@@ -18,6 +18,12 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from .train import EBJEPA
+
+# V4 model import (optional — only needed for V4 checkpoints)
+try:
+    from .train_v4 import EBJEPA_V4
+except ImportError:
+    EBJEPA_V4 = None
 from .analysis import (
     extract_embeddings,
     extract_torus_embeddings,
@@ -187,14 +193,25 @@ def evaluate(
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
     loss_type = loss_cfg.get("type", "toroidal")
-    use_torus_head = loss_type == "toroidal_v2"
+    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4")
+    is_v4 = loss_type == "toroidal_v4"
 
-    model = EBJEPA(
-        embed_dim=embed_dim,
-        hidden_dim=model_cfg.get("hidden_dim", 1024),
-        torus_head=use_torus_head,
-    ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    if is_v4 and EBJEPA_V4 is not None:
+        model = EBJEPA_V4(
+            embed_dim=embed_dim,
+            hidden_dim=model_cfg.get("hidden_dim", 1024),
+            ema_decay=model_cfg.get("ema_decay", 0.996),
+            torus_predictor_hidden=model_cfg.get("torus_predictor_hidden", 64),
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        print("V4 Toroidal Bottleneck model: DETECTED (prediction through torus)")
+    else:
+        model = EBJEPA(
+            embed_dim=embed_dim,
+            hidden_dim=model_cfg.get("hidden_dim", 1024),
+            torus_head=use_torus_head,
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     if use_torus_head:
         print("Torus projection head: DETECTED (will analyze 4D torus branch)")
