@@ -1,0 +1,44 @@
+# V8a: Detached Karmonic — encoder free, torus head independent
+#
+# The encoder gets NO gradients from karmonic or torus prediction.
+# encoder_output.detach() feeds the torus branch.
+#
+# This should restore encoder accuracy to ~70% (baseline level)
+# while the torus head independently develops toroidal structure.
+#
+# Using V6b's weights (the best Pareto point) for the torus branch.
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+  torus_dim: 2
+  n_modes: 6
+  torus_hidden: 128
+  predictor_hidden: 256
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v8a
+  grid_size: 12
+  lambda_std: 25.0           # VICReg std (encoder gets these)
+  lambda_torus_pred: 0.5     # Torus angle prediction (torus head only)
+  lambda_karmonic: 5.0       # Strong karmonic (torus head only — DETACHED)
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v8a_detached
+  save_every: 50
