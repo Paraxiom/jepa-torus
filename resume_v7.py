@@ -131,8 +131,9 @@ for epoch in range(start_epoch, total_epochs + 1):
         model.update_target()
 
         for k, v in losses.items():
-            if k != "total":
-                loss_accum[k] = loss_accum.get(k, 0.0) + (v.item() if torch.is_tensor(v) else v)
+            if k == "total" or isinstance(v, list):
+                continue
+            loss_accum[k] = loss_accum.get(k, 0.0) + (v.item() if torch.is_tensor(v) else v)
         loss_accum["total"] = loss_accum.get("total", 0.0) + losses["total"].item()
         gv = losses.get("gate", 0.0)
         gate_accum += gv.item() if torch.is_tensor(gv) else gv
