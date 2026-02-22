@@ -67,7 +67,11 @@ optimizer = torch.optim.AdamW(
     model.parameters(), lr=train_cfg.get("lr", 0.001),
     weight_decay=train_cfg.get("weight_decay", 0.05),
 )
-optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+try:
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    print("Optimizer state restored")
+except (ValueError, KeyError) as e:
+    print(f"Skipping optimizer restore (param mismatch): {e}")
 
 total_epochs = train_cfg.get("epochs", 300)
 warmup_epochs = train_cfg.get("warmup_epochs", 10)
