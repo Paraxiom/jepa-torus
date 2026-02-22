@@ -5,7 +5,7 @@ cd /workspace/jepa-torus
 pip install -q ripser persim umap-learn pyyaml scikit-learn
 
 for SCALE in 0.05 0.2 0.3; do
-    SCALE_PCT=$(echo "$SCALE * 100" | bc | cut -d. -f1)
+    SCALE_PCT=$(python3 -c "print(int(${SCALE}*100))")
     DIR="toroidal_v8b_scale${SCALE_PCT}"
 
     echo ""
