@@ -287,11 +287,11 @@ def evaluate(
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
     loss_type = loss_cfg.get("type", "toroidal")
-    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5", "toroidal_v6")
+    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5", "toroidal_v6", "toroidal_v7")
     is_v4 = loss_type == "toroidal_v4"
     is_v4b = loss_type == "toroidal_v4b"
     is_v5 = loss_type == "toroidal_v5"
-    is_v6 = loss_type == "toroidal_v6"
+    is_v6 = loss_type in ("toroidal_v6", "toroidal_v7")  # V7 reuses V6 architecture
 
     if is_v6 and EBJEPA_V6 is not None:
         torus_dim = model_cfg.get("torus_dim", 2)

@@ -1,0 +1,49 @@
+# V7: Adaptive Karmonic Constraint (ERLHS Coherence Thermostat)
+#
+# From ERLHS: H(z_{t+1}) <= H(z_t) + epsilon
+# The torus penalty is a thermostat, not a constant drain.
+#
+# Phase 1 (epochs 1-30): Full Karmonic to ESTABLISH torus coverage
+# Phase 2 (epochs 31-300): Adaptive gating — only apply when torus degrades
+#
+# When gate=0: encoder is free to maximize 512D accuracy
+# When gate>0: corrective penalty to maintain torus structure
+#
+# Architecture: same as V6 (dual-path 512D + Fourier torus)
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+  torus_dim: 2
+  n_modes: 6
+  torus_hidden: 128
+  predictor_hidden: 256
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10          # LR warmup (separate from Karmonic warmup)
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v7
+  grid_size: 12
+  lambda_std: 25.0            # Standard VICReg std
+  lambda_torus_pred: 0.5      # Torus angle prediction (always active)
+  lambda_karmonic: 5.0        # Karmonic penalty (strong, but GATED)
+  t_uniformity: 2.0
+  spread_weight: 1.0
+  warmup_karmonic_epochs: 30  # Full Karmonic for first 30 epochs
+  gate_width: 0.5             # Deficit range for gate ramp [0, gate_width] -> [0, 1]
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v7_adaptive
+  save_every: 50
