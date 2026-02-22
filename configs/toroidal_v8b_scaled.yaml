@@ -1,0 +1,38 @@
+# V8b: Gradient-Scaled Karmonic
+# Encoder sees 10% of torus gradients — gentle guide, not a drag
+
+model:
+  embed_dim: 512
+  hidden_dim: 1024
+  ema_decay: 0.996
+  torus_dim: 2
+  n_modes: 6
+  torus_hidden: 128
+  predictor_hidden: 256
+  karmonic_grad_scale: 0.1    # 10% of karmonic gradients reach encoder
+
+training:
+  epochs: 300
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 10
+  num_workers: 4
+  seed: 42
+
+loss:
+  type: toroidal_v8b
+  grid_size: 12
+  lambda_std: 25.0
+  lambda_torus_pred: 0.5
+  lambda_karmonic: 5.0        # Strong, but encoder only sees 10%
+  t_uniformity: 2.0
+  spread_weight: 1.0
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+
+output:
+  dir: ./checkpoints/toroidal_v8b_scaled
+  save_every: 50

@@ -40,6 +40,14 @@ try:
     from .train_v8a import EBJEPA_V8a
 except ImportError:
     EBJEPA_V8a = None
+try:
+    from .train_v8b import EBJEPA_V8b
+except ImportError:
+    EBJEPA_V8b = None
+try:
+    from .train_v8c import EBJEPA_V8c
+except ImportError:
+    EBJEPA_V8c = None
 from .analysis import (
     extract_embeddings,
     extract_torus_embeddings,
@@ -291,14 +299,46 @@ def evaluate(
     model_cfg = config.get("model", {})
     embed_dim = model_cfg.get("embed_dim", 512)
     loss_type = loss_cfg.get("type", "toroidal")
-    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5", "toroidal_v6", "toroidal_v7", "toroidal_v8a")
+    use_torus_head = loss_type in ("toroidal_v2", "toroidal_v4", "toroidal_v4b", "toroidal_v5", "toroidal_v6", "toroidal_v7", "toroidal_v8a", "toroidal_v8b", "toroidal_v8c")
     is_v4 = loss_type == "toroidal_v4"
     is_v4b = loss_type == "toroidal_v4b"
     is_v5 = loss_type == "toroidal_v5"
     is_v6 = loss_type in ("toroidal_v6", "toroidal_v7")  # V7 reuses V6 architecture
     is_v8a = loss_type == "toroidal_v8a"
+    is_v8b = loss_type == "toroidal_v8b"
+    is_v8c = loss_type == "toroidal_v8c"
 
-    if is_v8a and EBJEPA_V8a is not None:
+    if is_v8c and EBJEPA_V8c is not None:
+        torus_dim = model_cfg.get("torus_dim", 2)
+        n_modes = model_cfg.get("n_modes", 6)
+        model = EBJEPA_V8c(
+            embed_dim=embed_dim,
+            hidden_dim=model_cfg.get("hidden_dim", 1024),
+            ema_decay=model_cfg.get("ema_decay", 0.996),
+            torus_dim=torus_dim,
+            n_modes=n_modes,
+            torus_hidden=model_cfg.get("torus_hidden", 128),
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        fourier_dim = 2 * torus_dim * n_modes
+        print(f"V8c Contrastive: 512D + [DETACH] -> T^{torus_dim} x {n_modes} = {fourier_dim}D")
+    elif is_v8b and EBJEPA_V8b is not None:
+        torus_dim = model_cfg.get("torus_dim", 2)
+        n_modes = model_cfg.get("n_modes", 6)
+        model = EBJEPA_V8b(
+            embed_dim=embed_dim,
+            hidden_dim=model_cfg.get("hidden_dim", 1024),
+            ema_decay=model_cfg.get("ema_decay", 0.996),
+            torus_dim=torus_dim,
+            n_modes=n_modes,
+            torus_hidden=model_cfg.get("torus_hidden", 128),
+            predictor_hidden=model_cfg.get("predictor_hidden", 256),
+            karmonic_grad_scale=model_cfg.get("karmonic_grad_scale", 0.1),
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        fourier_dim = 2 * torus_dim * n_modes
+        print(f"V8b Scaled: 512D + [SCALE={model_cfg.get('karmonic_grad_scale', 0.1)}] -> T^{torus_dim} x {n_modes} = {fourier_dim}D")
+    elif is_v8a and EBJEPA_V8a is not None:
         torus_dim = model_cfg.get("torus_dim", 2)
         n_modes = model_cfg.get("n_modes", 6)
         model = EBJEPA_V8a(
